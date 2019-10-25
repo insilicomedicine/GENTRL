@@ -12,6 +12,7 @@ setup(
         'scipy>=1.1.0',
         'torch==1.0.1',
         'molsets==0.1.3'
+        'scikit-learn>=0.21.3'
     ],
     description='Generative Tensorial Reinforcement Learning (GENTRL)',
 )
