@@ -4,11 +4,12 @@ from gentrl.tokenizer import encode, get_vocab_size
 
 
 class RNNEncoder(nn.Module):
-    def __init__(self, hidden_size=256, num_layers=2, latent_size=50,
+    def __init__(self, vocab, hidden_size=256, num_layers=2, latent_size=50,
                  bidirectional=False):
         super(RNNEncoder, self).__init__()
 
-        self.embs = nn.Embedding(get_vocab_size(), hidden_size)
+        self.vocab = vocab
+        self.embs = nn.Embedding(len(vocab), hidden_size)
         self.rnn = nn.GRU(input_size=hidden_size,
                           hidden_size=hidden_size,
                           num_layers=num_layers,
@@ -18,12 +19,13 @@ class RNNEncoder(nn.Module):
             nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
             nn.Linear(hidden_size, 2 * latent_size))
 
+
     def encode(self, sm_list):
         """
         Maps smiles onto a latent space
         """
 
-        tokens, lens = encode(sm_list)
+        tokens, lens = encode(sm_list, self.vocab)
         to_feed = tokens.transpose(1, 0).to(self.embs.weight.device)
 
         outputs = self.rnn(self.embs(to_feed))[0]
