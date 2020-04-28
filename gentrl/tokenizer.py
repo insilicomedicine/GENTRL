@@ -79,7 +79,7 @@ def decode(tokens_tensor, vocab):
         for t in tokens_tensor[i].detach().cpu().numpy():
             if t == vocab.bos:
                 continue
-            if t == vocab.eos:
+            elif t == vocab.pad or t == vocab.eos:
                 break
             else:
                 cur_sm += vocab.id2char(t)
@@ -88,28 +88,3 @@ def decode(tokens_tensor, vocab):
 
     return smiles_res
 
-
-def get_vocab_size():
-    return len(__i2t)
-
-
-class Tokenizer:
-    def __init__(self, vocab):
-        self.vocab = vocab
-
-
-import pandas as pd
-from moses.utils import CharVocab
-if __name__ == "__main__":
-    smiles = ["Nc1cnc(-c2ccc(-c3ccccc3S(=O)(=O)NCCO)cc2F)cn1", "CN1c2ccc(-c3ccccc3)cc2C2C(CCN2C(=O)c2ccccc2F)C1CO"]
-    df = pd.read_csv("/home/kppz313/generative-de-novo-design-evaluation/de_novo_evaluation/models/gentrl/notebook/data/guacamol_qed_props")
-    vocab = CharVocab.from_data(df['SMILES'])
-    
-    print("This is what i put in:")
-    print(smiles)
-    ids, lens = encode(smiles, vocab)
-    print("Encoded to:")
-    print(ids)
-    print("And finally, we get out:")
-    str_again = decode(ids, vocab)
-    print(str_again)

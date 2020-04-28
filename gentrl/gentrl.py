@@ -4,6 +4,9 @@ import torch.optim as optim
 from math import pi, log
 from gentrl.lp import LP
 import pickle
+from tqdm import tqdm
+import numpy as np
+import random
 
 from moses.metrics.utils import get_mol
 
@@ -189,12 +192,19 @@ class GENTRL(nn.Module):
 
         return global_stats
 
-    def train_as_rl(self,
-                    reward_fn,
-                    num_iterations=100000, verbose_step=50,
-                    batch_size=200,
-                    cond_lb=-2, cond_rb=0,
-                    lr_lp=1e-5, lr_dec=1e-6):
+    def train_as_rl(
+        self,
+        reward_fn,
+        num_iterations=10000,
+        verbose_step=1,
+        batch_size=200,
+        cond_lb=-2,
+        cond_rb=0,
+        lr_lp=1 * 1e-5,
+        lr_dec=1 * 1e-6,
+        sigma_multp=2,
+        explore_ratio=0.3,
+    ):
         optimizer_lp = optim.Adam(self.lp.parameters(), lr=lr_lp)
         optimizer_dec = optim.Adam(self.dec.latent_fc.parameters(), lr=lr_dec)
 
@@ -202,52 +212,94 @@ class GENTRL(nn.Module):
         local_stats = TrainStats()
 
         cur_iteration = 0
-        while cur_iteration < num_iterations:
-            print("!", end='')
+        verbose_step
 
-            exploit_size = int(batch_size * (1 - 0.3))
-            exploit_z = self.lp.sample(exploit_size, 50 * ['s'] + ['m'])
+        iteration_batches = num_iterations // verbose_step
+        i = 0
 
-            z_means = exploit_z.mean(dim=0)
-            z_stds = exploit_z.std(dim=0)
+        print("==================================================================")
+        print("Running %d iterations of reinforcement learning" % num_iterations)
+        print("Sigma multiplier: %.4f" % sigma_multp)
+        print("Explore ratio: %.4f" % explore_ratio)
+        print("Batch size: %.4f" % batch_size)
+        print("Learning rate LP: %.8f" % lr_lp)
+        print("Learning rate DEC: %.8f" % lr_dec)
+        print("==================================================================\n")
 
-            expl_size = int(batch_size * 0.3)
-            expl_z = torch.randn(expl_size, exploit_z.shape[1])
-            expl_z = 2 * expl_z.to(exploit_z.device) * z_stds[None, :]
-            expl_z += z_means[None, :]
+        import pandas as pd
 
-            z = torch.cat([exploit_z, expl_z])
-            smiles = self.dec.sample(50, z, argmax=False)
-            zc = torch.zeros(z.shape[0], 1).to(z.device)
-            conc_zy = torch.cat([z, zc], dim=1)
-            log_probs = self.lp.log_prob(conc_zy, marg=50 * [False] + [True])
-            log_probs += self.dec.weighted_forward(smiles, z)
-            r_list = [reward_fn(s) for s in smiles]
+        df_memory = pd.DataFrame(columns=["smiles", "score"])
 
-            rewards = torch.tensor(r_list).float().to(exploit_z.device)
-            rewards_bl = rewards - rewards.mean()
+        from random import randint
 
-            optimizer_dec.zero_grad()
-            optimizer_lp.zero_grad()
-            loss = -(log_probs * rewards_bl).mean()
-            loss.backward()
-            optimizer_dec.step()
-            optimizer_lp.step()
+        for batch_ix in range(iteration_batches):
+            for iteration_ix in tqdm(range(verbose_step)):
+                i += 1
 
-            valid_sm = [s for s in smiles if get_mol(s) is not None]
-            cur_stats = {'mean_reward': sum(r_list) / len(smiles),
-                         'valid_perc': len(valid_sm) / len(smiles)}
+                exploit_size = int(batch_size * (1 - explore_ratio))
+                exploit_z = self.lp.sample(exploit_size, 50 * ["s"] + ["m"])
 
-            local_stats.update(cur_stats)
-            global_stats.update(cur_stats)
+                z_means = exploit_z.mean(dim=0)
+                z_stds = exploit_z.std(dim=0)
 
-            cur_iteration += 1
+                expl_size = int(batch_size * explore_ratio)
+                expl_z = torch.randn(expl_size, exploit_z.shape[1])
+                expl_z = sigma_multp * expl_z.to(exploit_z.device) * z_stds[None, :]
+                expl_z += z_means[None, :]
 
-            if verbose_step and (cur_iteration + 1) % verbose_step == 0:
-                local_stats.print()
-                local_stats.reset()
+                z = torch.cat([exploit_z, expl_z])
+                smiles = self.dec.sample(100, z, argmax=False)
+                zc = torch.zeros(z.shape[0], 1).to(z.device)
+                conc_zy = torch.cat([z, zc], dim=1)
+                log_probs = self.lp.log_prob(conc_zy, marg=50 * [False] + [True])
+                log_probs += self.dec.weighted_forward(smiles, z)
 
-        return global_stats
+                r_list = [reward_fn(sm) for sm in smiles]
+                r_list = [-1 if r <= 0 else r for r in r_list]
+                rewards = torch.tensor(r_list).float().to(exploit_z.device)
+                rewards_bl = rewards - rewards.mean()
+
+                max_smiles_ix = np.argmax(np.array(r_list))
+
+                optimizer_dec.zero_grad()
+                optimizer_lp.zero_grad()
+                loss = -(log_probs * rewards_bl).mean()
+                loss.backward()
+                optimizer_dec.step()
+                optimizer_lp.step()
+
+                valid_sm = [s for s in smiles if get_mol(s) is not None]
+                mean_reward_valid_smiles = (
+                    sum(r_list) / len(valid_sm) if len(valid_sm) > 0 else 0
+                )
+                cur_stats = {
+                    "mean_reward": sum(r_list) / len(smiles),
+                    "valid_perc": len(valid_sm) / len(smiles),
+                    "max_reward": max(r_list),
+                    "mean_reward_valid_smiles": mean_reward_valid_smiles,
+                }
+
+                df_memory = df_memory.append(
+                    {"smiles": smiles[max_smiles_ix], "score": r_list[max_smiles_ix]},
+                    ignore_index=True,
+                )
+                df_memory = df_memory.sort_values(by="score", ascending=False)
+
+                if len(df_memory) > 9999:
+                    df_memory = df_memory[:10000]
+
+                local_stats.update(cur_stats)
+                global_stats.update(cur_stats)
+
+                cur_iteration = verbose_step * (batch_ix + 1)
+
+            print(flush=True)
+            print("Iteration %d/%d" % (cur_iteration, num_iterations), flush=True)
+            print(df_memory.head())
+            local_stats.print()
+            local_stats.reset()
+
+        return df_memory
 
     def sample(self, num_samples):
         z = self.lp.sample(num_samples, 50 * ['s'] + ['m'])

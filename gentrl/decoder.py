@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gentrl.tokenizer import get_vocab_size, encode, decode
+from gentrl.tokenizer import encode, decode
 
 
 class DilConvDecoder(nn.Module):
@@ -30,7 +30,7 @@ class DilConvDecoder(nn.Module):
         self.num_dilated_layers = num_dilated_layers
         self.num_channels = num_channels
         self.token_weights = token_weights
-        self.eos = 2
+        self.eos = vocab.pad
 
         cur_dil = 1
         self.dil_conv_layers = []
